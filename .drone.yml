@@ -1,0 +1,49 @@
+---
+kind: pipeline
+type: docker
+name: default
+
+platform:
+  os: linux
+  arch: amd64
+
+trigger:
+  branch:
+  - master
+
+steps:
+- name: docker
+  image: plugins/docker
+  settings:
+    repo: docker.io/kanatakita/named
+    tags: latest
+    dockerfile: ./named/Dockerfile
+    username:
+      from_secret: docker_username
+    password:
+      from_secret: docker_password
+
+#- name: update-manifest
+#  image: alpine/git:1.0.7
+#  environment:
+#    TZ: Asia/Tokyo
+#    SSH_KEY:
+#      from_secret: deploy_key
+#  commands:
+#  - export REMOTE_URL="$(git config remote.origin.url | sed -e 's|.git$||g')"
+#  - export REPOSITORY="$(echo $REMOTE_URL | awk -F'/' '{print $NF}')"
+#  - export COMMIT_HASH="$(git rev-parse --short HEAD)"
+#  - mkdir /root/.ssh && echo "$SSH_KEY" > /root/.ssh/id_rsa && chmod 0600 /root/.ssh/id_rsa
+#  - echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > /root/.ssh/config
+#  - git clone git@github.com:ShotaKitazawa/manifests-gitops.git /root/manifests
+#  - cd /root/manifests
+#  - sed -i -e 's|\(deployDate:\).*$|\1 '$(date +%Y-%m-%d)'|g' /root/manifests/myapp/$REPOSITORY/manifest.yaml
+#  - sed -i -e 's|\(commitHash:\).*$|\1 '$COMMIT_HASH'|g' /root/manifests/myapp/$REPOSITORY/manifest.yaml
+#  - git add .
+#  - git config user.name DroneCI
+#  - git config user.email dummy@example.com
+#  - git commit -m "update by Drone CI ($REMOTE_URL/commit/$COMMIT_HASH)"
+#  - git push origin HEAD
+#  depends_on:
+#  - docker
+#
