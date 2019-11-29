@@ -1,7 +1,10 @@
 ---
 kind: pipeline
-type: docker
+type: kubernetes
 name: default
+
+metadata:
+  namespace: default
 
 platform:
   os: linux
