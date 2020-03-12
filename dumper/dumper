@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -e -o pipefail
+
+DUMP_DIR=${1:?"please specified directory"}
+if [ ! -d $DUMP_DIR ]; then
+  echo "$DUMP_DIR is not directory"
+  exit 1
+fi
+
+function envOrDefault() {
+  local default=$2
+  local var=$(eval echo \$$1)
+  if [ "$var" != "" ]; then
+    echo $var
+  else
+    echo $default
+  fi
+}
+
+function defaultDBPort() {
+  if [ $DB_DRIVER = "mysql" ]; then
+    echo 3306
+  elif [ $DB_DRIVER = "mongo" ]; then
+    echo 27017
+  fi
+}
+
+DB_DRIVER=$(envOrDefault DB_DRIVER "mysql")
+DB_HOST=$(envOrDefault DB_HOST "127.0.0.1")
+DB_PORT=$(envOrDefault DB_PORT "$(defaultDBPort)")
+DB_USER=$(envOrDefault DB_USER "root")
+DB_PASS=$(envOrDefault DB_PASS "password")
+
+echo "connect to $DB_DRIVER (tcp://$DB_USER@"'***'"$DB_HOST:$DB_PORT)"
+
+if [ $DB_DRIVER = "mysql" ]; then
+  mysqldump --skip-lock-tables -u$DB_USER -p$DB_PASS -h$DB_HOST -P$DB_PORT -A > dump.sql
+  tar cvzf dump.mysql.tgz dump.sql
+  mv dump.mysql.tgz $DUMP_DIR/
+elif [ $DB_DRIVER = "mongo" ]; then
+  mongodump --host $DB_HOST --port $DB_PORT -o dump.bson
+  tar cvzf dump.mongo.tgz dump.bson
+  mv dump.mongo.tgz $DUMP_DIR/
+else
+  echo "driver unsupported"
+  exit 1
+fi
