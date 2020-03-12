@@ -14,5 +14,5 @@ RUN apt install -y gnupg wget \
       && apt update \
       && apt install -y mongodb-org-shell mongodb-org-tools
 
-COPY dumper .
+COPY dumper/dumper .
 ENTRYPOINT ["bash", "dumper"]
