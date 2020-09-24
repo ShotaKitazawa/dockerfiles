@@ -22,6 +22,10 @@ function defaultDBPort() {
     echo 3306
   elif [ $DB_DRIVER = "mongo" ]; then
     echo 27017
+  elif [ $DB_DRIVER = "etcd" ]; then
+    echo 2379
+  elif [ $DB_DRIVER = "etcdv3" ]; then
+    echo 2379
   fi
 }
 
@@ -41,6 +45,15 @@ elif [ $DB_DRIVER = "mongo" ]; then
   mongodump --host $DB_HOST --port $DB_PORT -o dump.bson
   tar cvzf dump.mongo.tgz dump.bson
   mv dump.mongo.tgz $DUMP_DIR/
+elif [ $DB_DRIVER = "etcd" ]; then
+  mkdir backup.etcd
+  ETCDCTL_API=2 etcdctl --endpoints $DB_HOST:$DB_PORT -u $DB_USER:$DB_PASS backup --data-dir /var/lib/etcd/ --backup-dir backup.etcd
+  tar cvzf dump.etcd.tgz backup.etcd
+  mv dump.etcd.tgz $DUMP_DIR/
+elif [ $DB_DRIVER = "etcdv3" ]; then
+  ETCDCTL_API=3 etcdctl --endpoints $DB_HOST:$DB_PORT --user $DB_USER:$DB_PASS snapshot save dump.db
+  tar cvzf dump.etcdv3.tgz dump.db
+  mv dump.etcdv3.tgz $DUMP_DIR/
 else
   echo "driver unsupported"
   exit 1

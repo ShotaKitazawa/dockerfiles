@@ -14,5 +14,8 @@ RUN apt install -y gnupg wget \
       && apt update \
       && apt install -y mongodb-org-shell mongodb-org-tools
 
+# install etcd client
+RUN apt install -y etcd-client
+
 COPY dumper/dumper .
 ENTRYPOINT ["bash", "dumper"]
