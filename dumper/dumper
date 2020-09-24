@@ -47,11 +47,13 @@ elif [ $DB_DRIVER = "mongo" ]; then
   mv dump.mongo.tgz $DUMP_DIR/
 elif [ $DB_DRIVER = "etcd" ]; then
   mkdir backup.etcd
-  ETCDCTL_API=2 etcdctl --endpoints $DB_HOST:$DB_PORT -u $DB_USER:$DB_PASS backup --data-dir /var/lib/etcd/ --backup-dir backup.etcd
+  #ETCDCTL_API=2 etcdctl --endpoints $DB_HOST:$DB_PORT -u $DB_USER:$DB_PASS backup --data-dir /var/lib/etcd/ --backup-dir backup.etcd
+  ETCDCTL_API=2 etcdctl --endpoints $DB_HOST:$DB_PORT backup --data-dir /var/lib/etcd/ --backup-dir backup.etcd
   tar cvzf dump.etcd.tgz backup.etcd
   mv dump.etcd.tgz $DUMP_DIR/
 elif [ $DB_DRIVER = "etcdv3" ]; then
-  ETCDCTL_API=3 etcdctl --endpoints $DB_HOST:$DB_PORT --user $DB_USER:$DB_PASS snapshot save dump.db
+  #ETCDCTL_API=3 etcdctl --endpoints $DB_HOST:$DB_PORT --user $DB_USER:$DB_PASS snapshot save dump.db
+  ETCDCTL_API=3 etcdctl --endpoints $DB_HOST:$DB_PORT snapshot save dump.db
   tar cvzf dump.etcdv3.tgz dump.db
   mv dump.etcdv3.tgz $DUMP_DIR/
 else
