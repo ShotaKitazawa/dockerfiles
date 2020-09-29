@@ -38,7 +38,7 @@ DB_PASS=$(envOrDefault DB_PASS "password")
 echo "connect to $DB_DRIVER (tcp://$DB_USER@"'***'"$DB_HOST:$DB_PORT)"
 
 if [ $DB_DRIVER = "mysql" ]; then
-  mysqldump --skip-lock-tables -u$DB_USER -p$DB_PASS -h$DB_HOST -P$DB_PORT -A > dump.sql
+  mysqldump --skip-column-statistics --quote-names --skip-lock-tables --single-transaction --flush-logs -u${DB_USER} -p${DB_PASS} -h${DB_HOST} -P${DB_PORT} -A > dump.sql
   tar cvzf dump.mysql.tgz dump.sql
   mv dump.mysql.tgz $DUMP_DIR/
 elif [ $DB_DRIVER = "mongo" ]; then
