@@ -1,4 +1,5 @@
 FROM alpine:3.10.3
+LABEL maintainer="ShotaKitazawa <skitazawa1121@gmail.com>"
 
 RUN apk add bash --no-cache
 

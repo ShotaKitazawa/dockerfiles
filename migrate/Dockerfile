@@ -1,5 +1,6 @@
 ## Download dockerize stage ##
 FROM alpine:3.10.3 as dockerize
+LABEL maintainer="ShotaKitazawa <skitazawa1121@gmail.com>"
 ENV DOCKERIZE_VERSION v0.6.1
 WORKDIR /workdir
 # Download github.com/jwilder/dockerize
