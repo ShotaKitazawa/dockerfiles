@@ -1,21 +1,28 @@
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 
 LABEL maintainer="ShotaKitazawa <skitazawa1121@gmail.com>"
 
-RUN apt update && apt install apt-transport-https -y
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    apt-transport-https \
+    && rm -rf /var/lib/apt/lists/*
 
 # install mysql client
-RUN apt install -y mysql-client
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    mysql-client \
+    && rm -rf /var/lib/apt/lists/*
 
 # install mongo client
-RUN apt install -y gnupg wget \
-      && wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | apt-key add - \
-      && echo "deb [ arch=amd64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-4.4.list \
-      && apt update \
-      && apt install -y mongodb-org-shell mongodb-org-tools
+RUN apt-get update && apt-get install -y --no-install-recommends gnupg curl \
+    && curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg \
+    && echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends mongodb-mongosh mongodb-database-tools \
+    && rm -rf /var/lib/apt/lists/*
 
 # install etcd client
-RUN apt install -y etcd-client
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    etcd-client \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY dumper/dumper .
+COPY dumper .
 ENTRYPOINT ["bash", "dumper"]

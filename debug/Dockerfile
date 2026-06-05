@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 LABEL maintainer="ShotaKitazawa <skitazawa1121@gmail.com>"
 
 RUN apt update -y
