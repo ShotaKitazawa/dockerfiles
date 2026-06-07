@@ -77,7 +77,7 @@ func loginHandler(cfg appConfig, oauth2Cfg *oauth2.Config) http.HandlerFunc {
 			return
 		}
 
-		loginReq, err := hydraGet(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login", challenge)
+		loginReq, err := hydraGet(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login", "login_challenge", challenge)
 		if err != nil {
 			slog.Error("get login request", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -87,7 +87,7 @@ func loginHandler(cfg appConfig, oauth2Cfg *oauth2.Config) http.HandlerFunc {
 		// Already authenticated: skip login UI and accept immediately.
 		if skip, _ := loginReq["skip"].(bool); skip {
 			subject, _ := loginReq["subject"].(string)
-			redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login/accept", challenge, map[string]any{
+			redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login/accept", "login_challenge", challenge, map[string]any{
 				"subject":      subject,
 				"remember":     false,
 				"remember_for": 0,
@@ -151,7 +151,7 @@ func loginCallbackHandler(cfg appConfig, oauth2Cfg *oauth2.Config, verifier *oid
 			subject = claims.Sub
 		}
 
-		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login/accept", challenge, map[string]any{
+		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login/accept", "login_challenge", challenge, map[string]any{
 			"subject":      subject,
 			"remember":     false,
 			"remember_for": 0,
@@ -174,7 +174,7 @@ func consentHandler(cfg appConfig) http.HandlerFunc {
 			return
 		}
 
-		consentReq, err := hydraGet(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/consent", challenge)
+		consentReq, err := hydraGet(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/consent", "consent_challenge", challenge)
 		if err != nil {
 			slog.Error("get consent request", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -184,7 +184,7 @@ func consentHandler(cfg appConfig) http.HandlerFunc {
 		scopes := toStringSlice(consentReq["requested_scope"])
 		audience := toStringSlice(consentReq["requested_access_token_audience"])
 
-		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/consent/accept", challenge, map[string]any{
+		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/consent/accept", "consent_challenge", challenge, map[string]any{
 			"grant_scope":                  scopes,
 			"grant_access_token_audience":  audience,
 			"remember":                     false,
@@ -212,9 +212,8 @@ func errorHandler() http.HandlerFunc {
 }
 
 // hydraGet calls a Hydra Admin GET endpoint with the given challenge query param.
-func hydraGet(endpoint, challenge string) (map[string]any, error) {
-	u := endpoint + "?login_challenge=" + url.QueryEscape(challenge)
-	// consent endpoint uses consent_challenge, but Hydra accepts both keys
+func hydraGet(endpoint, challengeParam, challenge string) (map[string]any, error) {
+	u := endpoint + "?" + challengeParam + "=" + url.QueryEscape(challenge)
 	resp, err := http.Get(u) //nolint:noctx
 	if err != nil {
 		return nil, err
@@ -228,9 +227,9 @@ func hydraGet(endpoint, challenge string) (map[string]any, error) {
 }
 
 // hydraAccept calls a Hydra Admin PUT accept endpoint and returns redirect_to.
-func hydraAccept(endpoint, challenge string, body map[string]any) (string, error) {
+func hydraAccept(endpoint, challengeParam, challenge string, body map[string]any) (string, error) {
 	b, _ := json.Marshal(body)
-	u := endpoint + "?login_challenge=" + url.QueryEscape(challenge)
+	u := endpoint + "?" + challengeParam + "=" + url.QueryEscape(challenge)
 	req, _ := http.NewRequest(http.MethodPut, u, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
