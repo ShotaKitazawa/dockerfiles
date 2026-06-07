@@ -17,6 +17,7 @@ jobs:
           - ansible-runner
           - debug
           - dumper
+          - hydra-login-consent
     steps:
       - uses: actions/checkout@v6
 
