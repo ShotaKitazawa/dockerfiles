@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/cel-go/cel"
 	"golang.org/x/oauth2"
 )
 
@@ -20,6 +21,7 @@ type appConfig struct {
 	auth0ClientSecret string
 	auth0CallbackURL  string
 	listenAddr        string
+	claimExpression   string
 }
 
 func loadConfig() appConfig {
@@ -29,11 +31,62 @@ func loadConfig() appConfig {
 		auth0ClientSecret: mustEnv("AUTH0_CLIENT_SECRET"),
 		auth0CallbackURL:  mustEnv("AUTH0_CALLBACK_URL"),
 		listenAddr:        getenv("LISTEN_ADDR", ":8080"),
+		claimExpression:   os.Getenv("CLAIM_EXPRESSION"),
 	}
+}
+
+type claimChecker struct {
+	prg cel.Program
+}
+
+func newClaimChecker(expression string) (*claimChecker, error) {
+	env, err := cel.NewEnv(
+		cel.Variable("claims", cel.MapType(cel.StringType, cel.DynType)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create CEL env: %w", err)
+	}
+	ast, issues := env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("compile CEL expression: %w", issues.Err())
+	}
+	prg, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("create CEL program: %w", err)
+	}
+	return &claimChecker{prg: prg}, nil
+}
+
+func (c *claimChecker) allow(claims map[string]any) (bool, error) {
+	out, _, err := c.prg.Eval(map[string]any{"claims": claims})
+	if err != nil {
+		// Treat runtime errors (e.g. missing claim key) as denial rather than
+		// a hard error — fail-safe for access control.
+		slog.Debug("CEL eval denied", "err", err)
+		return false, nil
+	}
+	result, ok := out.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("expression must evaluate to bool, got %T", out.Value())
+	}
+	return result, nil
 }
 
 func main() {
 	cfg := loadConfig()
+
+	var checker *claimChecker
+	if cfg.claimExpression != "" {
+		var err error
+		checker, err = newClaimChecker(cfg.claimExpression)
+		if err != nil {
+			slog.Error("invalid CLAIM_EXPRESSION", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("claim expression loaded", "expression", cfg.claimExpression)
+	} else {
+		slog.Warn("CLAIM_EXPRESSION not set, all authenticated users are allowed")
+	}
 
 	auth0Domain := mustEnv("AUTH0_DOMAIN")
 	auth0Issuer := "https://" + auth0Domain + "/"
@@ -55,7 +108,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", loginHandler(cfg, oauth2Cfg))
-	mux.HandleFunc("GET /login/callback", loginCallbackHandler(cfg, oauth2Cfg, idTokenVerifier))
+	mux.HandleFunc("GET /login/callback", loginCallbackHandler(cfg, oauth2Cfg, idTokenVerifier, checker))
 	mux.HandleFunc("GET /consent", consentHandler(cfg))
 	mux.HandleFunc("GET /error", errorHandler())
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -107,7 +160,7 @@ func loginHandler(cfg appConfig, oauth2Cfg *oauth2.Config) http.HandlerFunc {
 	}
 }
 
-func loginCallbackHandler(cfg appConfig, oauth2Cfg *oauth2.Config, verifier *oidc.IDTokenVerifier) http.HandlerFunc {
+func loginCallbackHandler(cfg appConfig, oauth2Cfg *oauth2.Config, verifier *oidc.IDTokenVerifier, checker *claimChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		challenge := r.URL.Query().Get("state")
 		code := r.URL.Query().Get("code")
@@ -136,19 +189,30 @@ func loginCallbackHandler(cfg appConfig, oauth2Cfg *oauth2.Config, verifier *oid
 			return
 		}
 
-		var claims struct {
-			Email string `json:"email"`
-			Sub   string `json:"sub"`
-		}
+		var claims map[string]any
 		if err := idToken.Claims(&claims); err != nil {
 			slog.Error("parse claims", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
-		subject := claims.Email
+		if checker != nil {
+			allowed, err := checker.allow(claims)
+			if err != nil {
+				slog.Error("evaluate claim expression", "err", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				slog.Warn("access denied by claim expression", "sub", claims["sub"])
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+
+		subject, _ := claims["email"].(string)
 		if subject == "" {
-			subject = claims.Sub
+			subject, _ = claims["sub"].(string)
 		}
 
 		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/login/accept", "login_challenge", challenge, map[string]any{
@@ -185,10 +249,10 @@ func consentHandler(cfg appConfig) http.HandlerFunc {
 		audience := toStringSlice(consentReq["requested_access_token_audience"])
 
 		redirectTo, err := hydraAccept(cfg.hydraAdminURL+"/admin/oauth2/auth/requests/consent/accept", "consent_challenge", challenge, map[string]any{
-			"grant_scope":                  scopes,
-			"grant_access_token_audience":  audience,
-			"remember":                     false,
-			"remember_for":                 0,
+			"grant_scope":                 scopes,
+			"grant_access_token_audience": audience,
+			"remember":                    false,
+			"remember_for":                0,
 		})
 		if err != nil {
 			slog.Error("accept consent request", "err", err)
