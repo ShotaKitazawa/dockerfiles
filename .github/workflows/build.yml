@@ -18,6 +18,7 @@ jobs:
           - debug
           - dumper
           - hydra-login-consent
+          - dcr-proxy
     steps:
       - uses: actions/checkout@v6
 
