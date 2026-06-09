@@ -18,14 +18,24 @@ type config struct {
 	upstreamURL      string
 	allowedCIDR      string
 	trustedProxyCIDR string
+	injectAudiences  []string // merged into audience field of DCR POST requests
 }
 
 func loadConfig() config {
+	var audiences []string
+	if v := os.Getenv("INJECT_AUDIENCES"); v != "" {
+		for _, a := range strings.Split(v, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				audiences = append(audiences, a)
+			}
+		}
+	}
 	return config{
 		listenAddr:       getenv("LISTEN_ADDR", ":8080"),
 		upstreamURL:      getenv("UPSTREAM_URL", "http://release-name-hydra-public:4444"),
 		allowedCIDR:      getenv("ALLOWED_CIDR", "192.168.0.0/24"),
 		trustedProxyCIDR: getenv("TRUSTED_PROXY_CIDR", "10.0.0.0/8"),
+		injectAudiences:  audiences,
 	}
 }
 
@@ -88,6 +98,42 @@ func stripContactsNull(resp *http.Response) error {
 	return nil
 }
 
+// mergeAudiences merges extra into the "audience" field of a DCR registration
+// JSON body, deduplicating while preserving the original order.
+// Non-JSON or non-object bodies are returned unchanged.
+func mergeAudiences(body []byte, extra []string) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+
+	var existing []string
+	if v, ok := obj["audience"]; ok {
+		_ = json.Unmarshal(v, &existing)
+	}
+
+	seen := make(map[string]bool, len(existing)+len(extra))
+	merged := make([]string, 0, len(existing)+len(extra))
+	for _, a := range append(existing, extra...) {
+		if !seen[a] {
+			seen[a] = true
+			merged = append(merged, a)
+		}
+	}
+
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return body
+	}
+	obj["audience"] = raw
+
+	newBody, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return newBody
+}
+
 func main() {
 	cfg := loadConfig()
 
@@ -114,6 +160,25 @@ func main() {
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("upstream error", "err", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}
+
+	if len(cfg.injectAudiences) > 0 {
+		orig := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			orig(req)
+			if req.Method != http.MethodPost || req.Body == nil {
+				return
+			}
+			body, err := io.ReadAll(req.Body)
+			req.Body.Close()
+			if err != nil {
+				req.Body = http.NoBody
+				return
+			}
+			newBody := mergeAudiences(body, cfg.injectAudiences)
+			req.Body = io.NopCloser(bytes.NewReader(newBody))
+			req.ContentLength = int64(len(newBody))
+		}
 	}
 
 	mux := http.NewServeMux()

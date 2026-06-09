@@ -107,6 +107,43 @@ func TestStripContactsNull_NonJSON(t *testing.T) {
 	}
 }
 
+func TestMergeAudiences_InjectsIntoEmpty(t *testing.T) {
+	body := `{"client_id":"abc","grant_types":["authorization_code"]}`
+	got := mergeAudiences([]byte(body), []string{"https://api.example.com"})
+	if !strings.Contains(string(got), `"https://api.example.com"`) {
+		t.Fatalf("audience not injected: %s", got)
+	}
+}
+
+func TestMergeAudiences_MergesWithExisting(t *testing.T) {
+	body := `{"audience":["https://existing.example.com"]}`
+	got := mergeAudiences([]byte(body), []string{"https://api.example.com"})
+	s := string(got)
+	if !strings.Contains(s, `"https://existing.example.com"`) {
+		t.Fatalf("existing audience lost: %s", s)
+	}
+	if !strings.Contains(s, `"https://api.example.com"`) {
+		t.Fatalf("injected audience missing: %s", s)
+	}
+}
+
+func TestMergeAudiences_Deduplicates(t *testing.T) {
+	body := `{"audience":["https://api.example.com"]}`
+	got := mergeAudiences([]byte(body), []string{"https://api.example.com"})
+	count := strings.Count(string(got), "https://api.example.com")
+	if count != 1 {
+		t.Fatalf("expected 1 occurrence, got %d: %s", count, got)
+	}
+}
+
+func TestMergeAudiences_NonJSONPassthrough(t *testing.T) {
+	body := []byte("not json")
+	got := mergeAudiences(body, []string{"https://api.example.com"})
+	if !bytes.Equal(got, body) {
+		t.Fatalf("non-JSON body should pass through unchanged")
+	}
+}
+
 func makeJSONPostResp(body string) *http.Response {
 	req := httptest.NewRequest(http.MethodPost, "/oauth2/register", nil)
 	return &http.Response{
