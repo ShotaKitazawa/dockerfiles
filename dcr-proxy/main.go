@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -14,28 +15,31 @@ import (
 )
 
 type config struct {
-	listenAddr       string
-	upstreamURL      string
-	allowedCIDR      string
-	trustedProxyCIDR string
-	injectAudiences  []string // merged into audience field of DCR POST requests
+	listenAddr                string
+	upstreamURL               string
+	allowedCIDR               string // empty = no IP restriction
+	trustedProxyCIDR          string // empty = use RemoteAddr directly
+	allowedAudiences          []string
+	allowedRedirectURIOrigins []string
 }
 
 func loadConfig() config {
-	var audiences []string
-	if v := os.Getenv("INJECT_AUDIENCES"); v != "" {
-		for _, a := range strings.Split(v, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				audiences = append(audiences, a)
+	parse := func(v string) []string {
+		var out []string
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
 			}
 		}
+		return out
 	}
 	return config{
-		listenAddr:       getenv("LISTEN_ADDR", ":8080"),
-		upstreamURL:      getenv("UPSTREAM_URL", "http://release-name-hydra-public:4444"),
-		allowedCIDR:      getenv("ALLOWED_CIDR", "192.168.0.0/24"),
-		trustedProxyCIDR: getenv("TRUSTED_PROXY_CIDR", "10.0.0.0/8"),
-		injectAudiences:  audiences,
+		listenAddr:                getenv("LISTEN_ADDR", ":8080"),
+		upstreamURL:               getenv("UPSTREAM_URL", "http://release-name-hydra-public:4444"),
+		allowedCIDR:               os.Getenv("ALLOWED_CIDR"),
+		trustedProxyCIDR:          os.Getenv("TRUSTED_PROXY_CIDR"),
+		allowedAudiences:          parse(os.Getenv("ALLOWED_AUDIENCES")),
+		allowedRedirectURIOrigins: parse(os.Getenv("ALLOWED_REDIRECT_URI_ORIGINS")),
 	}
 }
 
@@ -60,10 +64,19 @@ func getClientIP(r *http.Request, trustedNet *net.IPNet) net.IP {
 	return net.ParseIP(host)
 }
 
-// stripContactsNull removes "contacts":null from DCR POST response bodies.
-// Hydra serializes the contacts field as null instead of omitting it, which
-// causes the MCP TypeScript SDK's Zod schema to reject the response.
-func stripContactsNull(resp *http.Response) error {
+// clientIPFromRemoteAddr extracts the client IP from RemoteAddr without trusted-proxy logic.
+func clientIPFromRemoteAddr(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return net.ParseIP(r.RemoteAddr)
+	}
+	return net.ParseIP(host)
+}
+
+// sanitizeResponse removes Hydra-specific quirks from DCR POST response bodies:
+//   - "contacts":null → field deleted
+//   - "client_uri":"" / "logo_uri":"" / "tos_uri":"" / "policy_uri":"" → field deleted
+func sanitizeResponse(resp *http.Response) error {
 	if resp.Request.Method != http.MethodPost {
 		return nil
 	}
@@ -84,8 +97,22 @@ func stripContactsNull(resp *http.Response) error {
 		return nil
 	}
 
+	modified := false
 	if v, ok := obj["contacts"]; ok && bytes.Equal(v, []byte("null")) {
 		delete(obj, "contacts")
+		modified = true
+	}
+	for _, field := range []string{"client_uri", "logo_uri", "tos_uri", "policy_uri"} {
+		if v, ok := obj[field]; ok {
+			var s string
+			if json.Unmarshal(v, &s) == nil && s == "" {
+				delete(obj, field)
+				modified = true
+			}
+		}
+	}
+
+	if modified {
 		if newBody, err := json.Marshal(obj); err == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(newBody))
 			resp.ContentLength = -1
@@ -98,55 +125,105 @@ func stripContactsNull(resp *http.Response) error {
 	return nil
 }
 
-// mergeAudiences merges extra into the "audience" field of a DCR registration
-// JSON body, deduplicating while preserving the original order.
-// Non-JSON or non-object bodies are returned unchanged.
-func mergeAudiences(body []byte, extra []string) []byte {
+// validateAudiences returns an error if any audience in the DCR request body
+// is not in allowed. Passes through if allowed is empty or body is non-JSON.
+func validateAudiences(body []byte, allowed []string) error {
+	if len(allowed) == 0 {
+		return nil
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
+		return nil
 	}
-
-	var existing []string
-	if v, ok := obj["audience"]; ok {
-		_ = json.Unmarshal(v, &existing)
+	raw, ok := obj["audience"]
+	if !ok {
+		return nil
 	}
-
-	seen := make(map[string]bool, len(existing)+len(extra))
-	merged := make([]string, 0, len(existing)+len(extra))
-	for _, a := range append(existing, extra...) {
-		if !seen[a] {
-			seen[a] = true
-			merged = append(merged, a)
+	var audiences []string
+	if err := json.Unmarshal(raw, &audiences); err != nil {
+		return nil
+	}
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, a := range allowed {
+		allowedSet[a] = true
+	}
+	for _, a := range audiences {
+		if !allowedSet[a] {
+			return fmt.Errorf("audience not allowed: %s", a)
 		}
 	}
+	return nil
+}
 
-	raw, err := json.Marshal(merged)
-	if err != nil {
-		return body
+// validateRedirectURIs returns an error if any redirect_uri in the DCR request
+// body is neither a loopback URI nor an origin listed in allowedOrigins.
+// When allowedOrigins is empty only loopback URIs are accepted.
+func validateRedirectURIs(body []byte, allowedOrigins []string) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil
 	}
-	obj["audience"] = raw
+	raw, ok := obj["redirect_uris"]
+	if !ok {
+		return nil
+	}
+	var uris []string
+	if err := json.Unmarshal(raw, &uris); err != nil {
+		return nil
+	}
+	for _, uri := range uris {
+		if !isAllowedRedirectURI(uri, allowedOrigins) {
+			return fmt.Errorf("redirect_uri not allowed: %s", uri)
+		}
+	}
+	return nil
+}
 
-	newBody, err := json.Marshal(obj)
+func isAllowedRedirectURI(rawURI string, allowedOrigins []string) bool {
+	u, err := url.Parse(rawURI)
 	if err != nil {
-		return body
+		return false
 	}
-	return newBody
+	host := u.Hostname()
+	if host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.") {
+		return true
+	}
+	origin := u.Scheme + "://" + u.Host
+	for _, a := range allowedOrigins {
+		if origin == a {
+			return true
+		}
+	}
+	return false
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg}) //nolint:errcheck
 }
 
 func main() {
 	cfg := loadConfig()
 
-	_, allowedNet, err := net.ParseCIDR(cfg.allowedCIDR)
-	if err != nil {
-		slog.Error("invalid ALLOWED_CIDR", "err", err)
-		os.Exit(1)
-	}
-
-	_, trustedNet, err := net.ParseCIDR(cfg.trustedProxyCIDR)
-	if err != nil {
-		slog.Error("invalid TRUSTED_PROXY_CIDR", "err", err)
-		os.Exit(1)
+	var (
+		allowedNet *net.IPNet
+		trustedNet *net.IPNet
+	)
+	if cfg.allowedCIDR != "" {
+		var err error
+		_, allowedNet, err = net.ParseCIDR(cfg.allowedCIDR)
+		if err != nil {
+			slog.Error("invalid ALLOWED_CIDR", "err", err)
+			os.Exit(1)
+		}
+		if cfg.trustedProxyCIDR != "" {
+			_, trustedNet, err = net.ParseCIDR(cfg.trustedProxyCIDR)
+			if err != nil {
+				slog.Error("invalid TRUSTED_PROXY_CIDR", "err", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	target, err := url.Parse(cfg.upstreamURL)
@@ -156,29 +233,10 @@ func main() {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ModifyResponse = stripContactsNull
+	proxy.ModifyResponse = sanitizeResponse
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("upstream error", "err", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
-	}
-
-	if len(cfg.injectAudiences) > 0 {
-		orig := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			orig(req)
-			if req.Method != http.MethodPost || req.Body == nil {
-				return
-			}
-			body, err := io.ReadAll(req.Body)
-			req.Body.Close()
-			if err != nil {
-				req.Body = http.NoBody
-				return
-			}
-			newBody := mergeAudiences(body, cfg.injectAudiences)
-			req.Body = io.NopCloser(bytes.NewReader(newBody))
-			req.ContentLength = int64(len(newBody))
-		}
 	}
 
 	mux := http.NewServeMux()
@@ -186,12 +244,39 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		clientIP := getClientIP(r, trustedNet)
-		if clientIP == nil || !allowedNet.Contains(clientIP) {
-			slog.Warn("denied", "ip", clientIP)
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
+		if allowedNet != nil {
+			var clientIP net.IP
+			if trustedNet != nil {
+				clientIP = getClientIP(r, trustedNet)
+			} else {
+				clientIP = clientIPFromRemoteAddr(r)
+			}
+			if clientIP == nil || !allowedNet.Contains(clientIP) {
+				slog.Warn("denied", "ip", clientIP)
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
 		}
+
+		if r.Method == http.MethodPost && r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			r.Body.Close()
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if err := validateAudiences(body, cfg.allowedAudiences); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := validateRedirectURIs(body, cfg.allowedRedirectURIOrigins); err != nil {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+		}
+
 		proxy.ServeHTTP(w, r)
 	})
 
