@@ -15,6 +15,7 @@ jobs:
       matrix:
         image:
           - ansible-runner
+          - terraform-runner
           - debug
           - dumper
           - hydra-login-consent
