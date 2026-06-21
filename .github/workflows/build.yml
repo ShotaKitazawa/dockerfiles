@@ -21,6 +21,7 @@ jobs:
           - dumper
           - hydra-login-consent
           - dcr-proxy
+          - gas-runner
     steps:
       - uses: actions/checkout@v6
 
