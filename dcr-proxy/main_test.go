@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -211,6 +213,68 @@ func TestValidateRedirectURIs_NoFieldPasses(t *testing.T) {
 func TestValidateRedirectURIs_NonJSONPasses(t *testing.T) {
 	if err := validateRedirectURIs([]byte("not json"), nil); err != nil {
 		t.Fatalf("non-JSON should pass, got %v", err)
+	}
+}
+
+// --- injectClientExpiry ---
+
+func TestInjectClientExpiry_SetsExpiry(t *testing.T) {
+	body := []byte(`{"client_name":"test"}`)
+	before := time.Now().Unix()
+	out, err := injectClientExpiry(body, 168*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Unix()
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("invalid JSON: %s", out)
+	}
+	raw, ok := obj["client_secret_expires_at"]
+	if !ok {
+		t.Fatalf("client_secret_expires_at not set: %s", out)
+	}
+	var exp int64
+	if err := json.Unmarshal(raw, &exp); err != nil {
+		t.Fatalf("invalid client_secret_expires_at: %s", raw)
+	}
+	min := before + int64((168 * time.Hour).Seconds())
+	max := after + int64((168 * time.Hour).Seconds())
+	if exp < min || exp > max {
+		t.Fatalf("client_secret_expires_at %d out of expected range [%d, %d]", exp, min, max)
+	}
+}
+
+func TestInjectClientExpiry_OverridesExistingExpiry(t *testing.T) {
+	body := []byte(`{"client_secret_expires_at":0}`)
+	before := time.Now().Unix()
+	out, err := injectClientExpiry(body, 168*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("invalid JSON: %s", out)
+	}
+	var exp int64
+	if err := json.Unmarshal(obj["client_secret_expires_at"], &exp); err != nil {
+		t.Fatalf("invalid client_secret_expires_at: %v", obj["client_secret_expires_at"])
+	}
+	if exp <= before {
+		t.Fatalf("expected expiry > %d (now), got %d — zero value not overridden", before, exp)
+	}
+}
+
+func TestInjectClientExpiry_NonJSONPassthrough(t *testing.T) {
+	body := []byte("not json")
+	out, err := injectClientExpiry(body, 168*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "not json" {
+		t.Fatalf("non-JSON body should pass through unchanged, got %s", out)
 	}
 }
 

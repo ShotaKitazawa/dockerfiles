@@ -11,7 +11,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type config struct {
@@ -21,6 +23,7 @@ type config struct {
 	trustedProxyCIDR          string // empty = use RemoteAddr directly
 	allowedAudiences          []string
 	allowedRedirectURIOrigins []string
+	clientSecretExpiresIn     time.Duration // 0 = disabled
 }
 
 func loadConfig() config {
@@ -33,7 +36,7 @@ func loadConfig() config {
 		}
 		return out
 	}
-	return config{
+	cfg := config{
 		listenAddr:                getenv("LISTEN_ADDR", ":8080"),
 		upstreamURL:               getenv("UPSTREAM_URL", "http://release-name-hydra-public:4444"),
 		allowedCIDR:               os.Getenv("ALLOWED_CIDR"),
@@ -41,6 +44,15 @@ func loadConfig() config {
 		allowedAudiences:          parse(os.Getenv("ALLOWED_AUDIENCES")),
 		allowedRedirectURIOrigins: parse(os.Getenv("ALLOWED_REDIRECT_URI_ORIGINS")),
 	}
+	if raw := getenv("CLIENT_SECRET_EXPIRES_IN", "168h"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			slog.Error("invalid CLIENT_SECRET_EXPIRES_IN", "err", err)
+			os.Exit(1)
+		}
+		cfg.clientSecretExpiresIn = d
+	}
+	return cfg
 }
 
 // getClientIP extracts the real client IP from X-Forwarded-For by stripping
@@ -197,6 +209,18 @@ func isAllowedRedirectURI(rawURI string, allowedOrigins []string) bool {
 	return false
 }
 
+// injectClientExpiry sets client_secret_expires_at to now+ttl, overriding any
+// caller-supplied value to enforce the maximum lifetime for DCR clients.
+func injectClientExpiry(body []byte, ttl time.Duration) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body, nil
+	}
+	expiresAt := time.Now().Add(ttl).Unix()
+	obj["client_secret_expires_at"] = json.RawMessage(strconv.FormatInt(expiresAt, 10))
+	return json.Marshal(obj)
+}
+
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -272,6 +296,14 @@ func main() {
 			if err := validateRedirectURIs(body, cfg.allowedRedirectURIOrigins); err != nil {
 				writeJSONError(w, http.StatusBadRequest, err.Error())
 				return
+			}
+			if cfg.clientSecretExpiresIn > 0 {
+				var err error
+				body, err = injectClientExpiry(body, cfg.clientSecretExpiresIn)
+				if err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
