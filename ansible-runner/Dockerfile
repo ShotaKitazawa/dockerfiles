@@ -1,6 +1,7 @@
 FROM python:3.11-slim
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+# renovate: datasource=docker depName=ghcr.io/astral-sh/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uvx /usr/local/bin/uvx
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     git \
