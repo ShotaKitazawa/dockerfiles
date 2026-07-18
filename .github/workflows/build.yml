@@ -22,7 +22,7 @@ jobs:
           - hydra-login-consent
           - dcr-proxy
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set image name (lowercase)
         run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/dockerfiles/${{ matrix.image }}" >> $GITHUB_ENV
