@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.32.0
 	golang.org/x/oauth2 v0.36.0
 )
 
