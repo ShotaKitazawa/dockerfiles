@@ -1,6 +1,6 @@
 FROM python:3.11-slim
-COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /usr/local/bin/uv
-COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uvx /usr/local/bin/uvx
+COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uvx /usr/local/bin/uvx
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     git \
