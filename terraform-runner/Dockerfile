@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=hashicorp/terraform
-FROM hashicorp/terraform:1.12.2
+FROM hashicorp/terraform:1.16.1
 # renovate: datasource=pypi depName=ansible-core
 ARG ANSIBLE_CORE_VERSION=2.21.1
 RUN apk upgrade --no-cache libexpat \
